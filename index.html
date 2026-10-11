@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#e8743b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="家庭菜单">
+  <title>家庭菜单 Family Meals</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1 id="app-title"></h1>
+    <button id="lang-btn" class="btn small" data-action="toggle-lang"></button>
+  </header>
+
+  <main id="view"></main>
+
+  <nav class="tabbar">
+    <button data-action="tab" data-tab="week"><span class="ico">📅</span><span class="lbl" data-i18n="tabWeek"></span></button>
+    <button data-action="tab" data-tab="grocery"><span class="ico">🛒</span><span class="lbl" data-i18n="tabGrocery"></span></button>
+    <button data-action="tab" data-tab="dishes"><span class="ico">🍲</span><span class="lbl" data-i18n="tabDishes"></span></button>
+  </nav>
+
+  <div id="modal" class="modal" hidden></div>
+  <div id="toast" class="toast" hidden></div>
+  <input id="import-input" type="file" accept=".json,application/json" hidden>
+
+  <script src="i18n.js"></script>
+  <script src="store.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

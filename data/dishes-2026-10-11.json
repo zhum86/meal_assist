@@ -1,0 +1,44 @@
+{
+ "app": "family-meals",
+ "kind": "dishes",
+ "version": 1,
+ "exportedAt": "2026-10-11T19:45:16.262Z",
+ "dishes": [
+  {
+   "id": "dmv48earlo28c",
+   "name": "黄油虾",
+   "chef": "妈妈",
+   "photo": null,
+   "ingredients": [
+    "大虾",
+    "蒜蓉",
+    "黄油"
+   ],
+   "updatedAt": 1791747866524
+  },
+  {
+   "id": "dmv48f3uj3szd",
+   "name": "鸡公煲",
+   "chef": "妈妈",
+   "photo": null,
+   "ingredients": [
+    "鸡腿",
+    "土豆",
+    "青椒"
+   ],
+   "updatedAt": 1791747887128
+  },
+  {
+   "id": "dmv48fjasr2nm",
+   "name": "红烧肉",
+   "chef": "妈妈",
+   "photo": null,
+   "ingredients": [
+    "五花肉",
+    "土豆",
+    "鸡蛋"
+   ],
+   "updatedAt": 1791747905837
+  }
+ ]
+}

@@ -1,0 +1,17 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Families can be looked up by code but not listed or created, so the project
+    // cannot be used by anyone who doesn't already have a family code.
+    // To add a family: temporarily add "create" here and set ALLOW_CREATE_FAMILY in firebase-config.js.
+    match /families/{code} {
+      allow get: if request.auth != null;
+    }
+    // dishes, slots and grocery records, only inside a family that exists.
+    match /families/{code}/{collection}/{id} {
+      allow read, write: if request.auth != null
+        && collection in ['dishes', 'slots', 'grocery']
+        && exists(/databases/$(database)/documents/families/$(code));
+    }
+  }
+}

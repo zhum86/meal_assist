@@ -4,8 +4,6 @@ const APP_ID = 'family-meals';
 const FILE_VERSION = 1;
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 const MEALS = ['breakfast', 'lunch', 'dinner'];
-const PHOTO_MAX_PX = 640;
-const PHOTO_QUALITY = 0.75;
 
 const state = {
   lang: 'zh',
@@ -133,6 +131,24 @@ async function persist(key) {
   }
 }
 
+// Saving after state has been changed in memory: on this device only (whole
+// collections in IndexedDB), or, in a family, just the changed records in the cloud.
+const Save = {
+  dish(dish) { Sync.active ? Sync.saveDish(dish) : persist('dishes'); },
+  deleteDish(id) { Sync.active ? Sync.deleteDish(id) : persist('dishes'); },
+  dishesImported(removedIds, slotsChanged) {
+    if (!Sync.active) { persist('dishes'); persist('schedules'); return; }
+    Sync.saveAllDishes(removedIds);
+    if (slotsChanged) Sync.saveAllSlots();
+  },
+  slot(ws, day, meal) { Sync.active ? Sync.saveSlot(ws, day, meal) : persist('schedules'); },
+  week(ws) { Sync.active ? Sync.saveWeek(ws) : persist('schedules'); },
+  checked(ws, name) { Sync.active ? Sync.setChecked(ws, name, !!getGrocery(ws).checked[name]) : persist('grocery'); },
+  extra(ws, ex) { Sync.active ? Sync.saveExtra(ws, ex) : persist('grocery'); },
+  removeExtra(ws, id) { Sync.active ? Sync.removeExtra(ws, id) : persist('grocery'); },
+  grocery(ws) { Sync.active ? Sync.saveGrocery(ws) : persist('grocery'); },
+};
+
 // ---------- rendering ----------
 
 function render() {
@@ -140,6 +156,7 @@ function render() {
   document.title = t('appTitle');
   $('#app-title').textContent = t('appTitle');
   $('#lang-btn').textContent = t('langSwitch');
+  onSyncStatus();
   document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
   document.querySelectorAll('.tabbar button').forEach(b =>
     b.classList.toggle('active', b.dataset.tab === state.tab));
@@ -481,11 +498,19 @@ function openDishForm(existing) {
   };
 
   q('#f-pick').onclick = () => q('#f-file').click();
+  const crop = async src => {
+    try {
+      const photo = await PhotoCropper.open(src);
+      if (photo) { draft.photo = photo; drawPhoto(); }
+    } catch { toast(t('photoFailed')); }
+  };
   q('#f-file').onchange = async e => {
     const file = e.target.files[0];
+    e.target.value = ''; // allow picking the same file again
     if (!file) return;
-    try { draft.photo = await resizeImage(file); drawPhoto(); }
-    catch { toast(t('photoFailed')); }
+    const url = URL.createObjectURL(file);
+    await crop(url);
+    URL.revokeObjectURL(url);
   };
   q('#f-unphoto').onclick = () => { draft.photo = null; drawPhoto(); };
   q('#f-ing-add').onclick = addIngs;
@@ -505,7 +530,7 @@ function openDishForm(existing) {
     draft.updatedAt = Date.now();
     const idx = state.dishes.findIndex(d => d.id === draft.id);
     if (idx >= 0) state.dishes[idx] = draft; else state.dishes.push(draft);
-    persist('dishes');
+    Save.dish(draft);
     closeModal();
     render();
     toast(t('saved'));
@@ -516,7 +541,7 @@ function openDishForm(existing) {
     const msg = used ? t('confirmDeleteDishUsed', { name: existing.name, n: used }) : t('confirmDeleteDish', { name: existing.name });
     if (!confirm(msg)) return;
     state.dishes = state.dishes.filter(d => d.id !== existing.id);
-    persist('dishes');
+    Save.deleteDish(existing.id);
     closeModal();
     render();
     toast(t('deleted'));
@@ -560,31 +585,11 @@ function openPicker(day, meal) {
     const existing = entries.findIndex(en => en.dishId === dish.id);
     if (existing >= 0) entries.splice(existing, 1); // tap again to remove
     else entries.push({ dishId: dish.id, dishName: dish.name });
-    persist('schedules');
+    Save.slot(state.weekStart, day, meal);
     draw();
     render();
   };
   draw();
-}
-
-// ---------- photos ----------
-
-function resizeImage(file) {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      const scale = Math.min(1, PHOTO_MAX_PX / Math.max(img.width, img.height));
-      const c = document.createElement('canvas');
-      c.width = Math.round(img.width * scale);
-      c.height = Math.round(img.height * scale);
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-      URL.revokeObjectURL(url);
-      resolve(c.toDataURL('image/jpeg', PHOTO_QUALITY));
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('image')); };
-    img.src = url;
-  });
 }
 
 // ---------- share / import ----------
@@ -677,9 +682,11 @@ function importDishes(data) {
     <button class="option" id="i-replace"><strong>${t('importReplace')}</strong><span class="muted small">${t('importReplaceHelp')}</span></button>
     <div class="actions"><span class="spacer"></span><button class="btn" id="i-cancel">${t('cancel')}</button></div>`);
 
+  const before = new Set(state.dishes.map(d => d.id));
+  let remapped = 0;
   const finish = () => {
-    persist('dishes');
-    persist('schedules');
+    const after = new Set(state.dishes.map(d => d.id));
+    Save.dishesImported([...before].filter(id => !after.has(id)), remapped > 0);
     closeModal();
     render();
     toast(t('importedDishes', { n: incoming.length }));
@@ -693,14 +700,14 @@ function importDishes(data) {
       if (byId >= 0) {
         // Another local dish may already hold the incoming (renamed) name; drop it.
         const clash = state.dishes.find(d => d.name === dish.name && d.id !== dish.id);
-        if (clash) { remapDishId(clash.id, dish.id); state.dishes = state.dishes.filter(d => d !== clash); }
+        if (clash) { remapped += remapDishId(clash.id, dish.id); state.dishes = state.dishes.filter(d => d !== clash); }
         state.dishes[state.dishes.findIndex(d => d.id === dish.id)] = dish;
         continue;
       }
       const byName = state.dishes.find(d => d.name === dish.name);
       if (byName) {
         // Same dish created separately on two phones: adopt the incoming ID.
-        remapDishId(byName.id, dish.id);
+        remapped += remapDishId(byName.id, dish.id);
         state.dishes = state.dishes.filter(d => d !== byName);
       }
       state.dishes.push(dish);
@@ -710,9 +717,11 @@ function importDishes(data) {
 }
 
 function remapDishId(oldId, newIdValue) {
+  let n = 0;
   for (const ws in state.schedules)
     for (const { entry } of weekEntries(state.schedules[ws]))
-      if (entry.dishId === oldId) entry.dishId = newIdValue;
+      if (entry.dishId === oldId) { entry.dishId = newIdValue; n++; }
+  return n;
 }
 
 function importSchedule(data) {
@@ -729,7 +738,7 @@ function importSchedule(data) {
   state.schedules[ws] = week;
   setWeek(ws);
   state.tab = 'week';
-  persist('schedules');
+  Save.week(ws);
   render();
   toast(t('importedSchedule', { date: fmtDate(ws) }));
 }
@@ -741,6 +750,7 @@ function saveMenuView() {
 }
 
 const actions = {
+  'open-sync'() { openSyncPanel(); },
   'toggle-lang'() {
     state.lang = state.lang === 'zh' ? 'en' : 'zh';
     try { localStorage.setItem('fm-lang', state.lang); } catch {}
@@ -758,8 +768,9 @@ const actions = {
   'toggle-edit'() { state.editing = !state.editing; render(); },
   'add-entry'(el) { openPicker(el.dataset.day, el.dataset.meal); },
   'remove-entry'(el) {
-    getWeek(state.weekStart, true)[el.dataset.day][el.dataset.meal].splice(+el.dataset.idx, 1);
-    persist('schedules');
+    const { day, meal } = el.dataset;
+    getWeek(state.weekStart, true)[day][meal].splice(+el.dataset.idx, 1);
+    Save.slot(state.weekStart, day, meal);
     render();
   },
   'view-dish'(el) {
@@ -779,7 +790,7 @@ const actions = {
     const g = getGrocery(state.weekStart);
     const name = el.dataset.name;
     if (g.checked[name]) delete g.checked[name]; else g.checked[name] = true;
-    persist('grocery');
+    Save.checked(state.weekStart, name);
     render();
   },
   'expand-ing'(el) {
@@ -789,19 +800,19 @@ const actions = {
   },
   'check-extra'(el) {
     const ex = getGrocery(state.weekStart).extras.find(x => x.id === el.dataset.id);
-    if (ex) { ex.checked = !ex.checked; persist('grocery'); render(); }
+    if (ex) { ex.checked = !ex.checked; Save.extra(state.weekStart, ex); render(); }
   },
   'remove-extra'(el) {
     const g = getGrocery(state.weekStart);
     g.extras = g.extras.filter(x => x.id !== el.dataset.id);
-    persist('grocery');
+    Save.removeExtra(state.weekStart, el.dataset.id);
     render();
   },
   'reset-checks'() {
     const g = getGrocery(state.weekStart);
     g.checked = {};
     g.extras.forEach(x => { x.checked = false; });
-    persist('grocery');
+    Save.grocery(state.weekStart);
     render();
   },
 };
@@ -816,8 +827,11 @@ document.addEventListener('submit', e => {
   if (e.target.dataset.form !== 'add-extra') return;
   e.preventDefault();
   const g = getGrocery(state.weekStart);
-  for (const name of splitList(e.target.item.value)) g.extras.push({ id: newId('x'), name, checked: false });
-  persist('grocery');
+  for (const name of splitList(e.target.item.value)) {
+    const ex = { id: newId('x'), name, checked: false, at: Date.now() };
+    g.extras.push(ex);
+    Save.extra(state.weekStart, ex);
+  }
   render();
   $('[data-form="add-extra"] input')?.focus();
 });
@@ -827,10 +841,164 @@ document.addEventListener('input', e => {
 });
 
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && !$('#modal').hidden) closeModal();
+  if (e.key === 'Escape' && !$('#modal').hidden && !document.querySelector('.cropper')) closeModal();
 });
 
 $('#import-input').addEventListener('change', onImportFile);
+
+// ---------- family sync ----------
+
+// Remote changes re-render the page, but not while someone is typing in it.
+let renderPending = false;
+function onRemoteData() {
+  if (document.activeElement?.matches('#view input')) { renderPending = true; return; }
+  render();
+}
+document.addEventListener('focusout', () => {
+  if (!renderPending) return;
+  setTimeout(() => {
+    if (document.activeElement?.matches('#view input')) return;
+    renderPending = false;
+    render();
+  }, 300);
+});
+
+function syncStatusText() {
+  if (!Sync.active) return t('syncLocal');
+  if (Sync.status === 'error') return t('syncError', { err: Sync.error });
+  return t('sync_' + Sync.status);
+}
+
+function onSyncStatus() {
+  const btn = $('#sync-btn');
+  btn.dataset.status = Sync.active ? Sync.status : 'off';
+  btn.title = syncStatusText();
+  const line = $('#sync-status');
+  if (line) line.textContent = syncStatusText();
+}
+
+async function loadLocal() {
+  try {
+    state.dishes = await Store.get('dishes', []);
+    state.schedules = await Store.get('schedules', {});
+    state.grocery = await Store.get('grocery', {});
+  } catch (err) {
+    toast(t('saveFailed', { err: err?.message || err }));
+  }
+}
+
+function inviteLink(code) {
+  return `${location.origin}${location.pathname}?family=${code}`;
+}
+
+async function shareInvite(code) {
+  const url = inviteLink(code);
+  const text = t('inviteText', { code: Sync.format(code) });
+  if (navigator.share) {
+    try { await navigator.share({ title: t('appTitle'), text, url }); return; }
+    catch (err) { if (err.name === 'AbortError') return; }
+  }
+  try { await navigator.clipboard.writeText(`${text}\n${url}`); toast(t('copied')); }
+  catch { prompt(t('familyCode'), url); }
+}
+
+// Runs a sync step with the panel's buttons disabled; returns false if it failed.
+async function busy(sheet, work) {
+  const controls = sheet ? [...sheet.querySelectorAll('button, input')] : [];
+  controls.forEach(el => { el.disabled = true; });
+  toast(t('working'));
+  try {
+    await work();
+    return true;
+  } catch (err) {
+    toast(t('syncFailed', { err: err?.code || err?.message || err }));
+    return false;
+  } finally {
+    controls.forEach(el => { el.disabled = false; });
+  }
+}
+
+async function joinFamily(code, sheet) {
+  let found = false;
+  if (!(await busy(sheet, async () => { found = await Sync.join(code); }))) return;
+  if (!found) return toast(t('noSuchFamily'));
+  closeModal();
+  render();
+  toast(t('joined'));
+}
+
+function openSyncPanel() {
+  if (!Sync.available) {
+    const sheet = openModal(`
+      <h2>${t('syncTitle')}</h2>
+      <p>${location.protocol.startsWith('http') ? t('syncNotConfigured') : t('syncNeedsWeb')}</p>
+      <div class="actions"><span class="spacer"></span><button class="btn primary" id="s-close">${t('close')}</button></div>`);
+    sheet.querySelector('#s-close').onclick = closeModal;
+    return;
+  }
+
+  if (Sync.active) {
+    const sheet = openModal(`
+      <h2>${t('syncTitle')}</h2>
+      <p id="sync-status" class="muted"></p>
+      <div class="field"><span>${t('familyCode')}</span><div class="family-code">${Sync.format(Sync.code)}</div></div>
+      <p class="muted small">${t('codeWarning')}</p>
+      <div class="actions">
+        <button class="btn danger" id="s-leave">${t('leaveFamily')}</button>
+        <span class="spacer"></span>
+        <button class="btn" id="s-invite">${t('shareInvite')}</button>
+        <button class="btn primary" id="s-close">${t('close')}</button>
+      </div>`);
+    sheet.querySelector('#s-close').onclick = closeModal;
+    sheet.querySelector('#s-invite').onclick = () => shareInvite(Sync.code);
+    sheet.querySelector('#s-leave').onclick = async () => {
+      if (!confirm(t('confirmLeave'))) return;
+      Sync.leave();
+      await loadLocal();
+      closeModal();
+      render();
+      toast(t('left'));
+    };
+    onSyncStatus();
+    return;
+  }
+
+  const sheet = openModal(`
+    <h2>${t('syncTitle')}</h2>
+    <p>${t('syncIntro')}</p>
+    ${window.ALLOW_CREATE_FAMILY ? `<button class="option" id="s-create"><strong>${t('createFamily')}</strong><span class="muted small">${t('createHelp')}</span></button>` : ''}
+    <div class="option">
+      <strong>${t('joinFamily')}</strong><span class="muted small">${t('joinHelp')}</span>
+      <form class="row join-form" id="s-join">
+        <input name="code" placeholder="${t('codePh')}" autocomplete="off" autocapitalize="characters" spellcheck="false">
+        <button class="btn primary" type="submit">${t('join')}</button>
+      </form>
+    </div>
+    <div class="actions"><span class="spacer"></span><button class="btn" id="s-close">${t('close')}</button></div>`);
+  sheet.querySelector('#s-close').onclick = closeModal;
+  if (window.ALLOW_CREATE_FAMILY) sheet.querySelector('#s-create').onclick = async () => {
+    if (!(await busy(sheet, () => Sync.create()))) return;
+    render();
+    toast(t('created'));
+    openSyncPanel(); // show the new code and the invite button
+  };
+  sheet.querySelector('#s-join').onsubmit = e => {
+    e.preventDefault();
+    const code = Sync.normalize(e.target.code.value);
+    if (!Sync.isValid(code)) return toast(t('badCode'));
+    joinFamily(code, sheet);
+  };
+}
+
+// An invite link (?family=CODE) offers to join that family.
+function checkInviteLink() {
+  const params = new URLSearchParams(location.search);
+  if (!params.has('family')) return;
+  const code = Sync.normalize(params.get('family'));
+  history.replaceState(null, '', location.pathname);
+  if (!Sync.available || !Sync.isValid(code) || code === Sync.code) return;
+  if (confirm(t('joinConfirm', { code: Sync.format(code) }))) joinFamily(code, null);
+}
 
 // ---------- start ----------
 
@@ -840,14 +1008,10 @@ $('#import-input').addEventListener('change', onImportFile);
   state.lang = lang === 'en' ? 'en' : 'zh';
   try { state.menuView = localStorage.getItem('fm-menu-view') === 'day' ? 'day' : 'week'; } catch {}
 
-  try {
-    state.dishes = await Store.get('dishes', []);
-    state.schedules = await Store.get('schedules', {});
-    state.grocery = await Store.get('grocery', {});
-  } catch (err) {
-    toast(t('saveFailed', { err: err?.message || err }));
-  }
+  if (Sync.savedCode() && Sync.available) Sync.resume();
+  else await loadLocal();
   render();
+  checkInviteLink();
 
   navigator.storage?.persist?.().catch(() => {});
   if ('serviceWorker' in navigator && location.protocol.startsWith('http'))

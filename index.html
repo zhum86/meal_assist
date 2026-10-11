@@ -17,7 +17,10 @@
 <body>
   <header class="app-header">
     <h1 id="app-title"></h1>
-    <button id="lang-btn" class="btn small" data-action="toggle-lang"></button>
+    <div class="header-actions">
+      <button id="sync-btn" class="btn small sync-btn" data-action="open-sync" data-status="off">☁️<span class="dot"></span></button>
+      <button id="lang-btn" class="btn small" data-action="toggle-lang"></button>
+    </div>
   </header>
 
   <main id="view"></main>
@@ -34,6 +37,9 @@
 
   <script src="i18n.js"></script>
   <script src="store.js"></script>
+  <script src="cropper.js"></script>
+  <script src="firebase-config.js"></script>
+  <script src="sync.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

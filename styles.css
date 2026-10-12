@@ -529,3 +529,45 @@ main { max-width: 720px; margin: 0 auto; padding: 12px 16px; }
 .join-form { margin-top: 8px; }
 .join-form input { text-transform: uppercase; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 div.option { cursor: default; }
+
+/* ---------- grocery: stores and per-meal needs ---------- */
+
+.store-wholefoods { --store: #00674b; }
+.store-cam { --store: #7c3aed; }
+.store-target { --store: #cc0000; }
+.store-costco { --store: #005daa; }
+
+.store-tag {
+  border: 1px solid var(--store, var(--line));
+  color: var(--store, var(--muted));
+  background: none;
+  border-radius: 99px;
+  padding: 1px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.store-tag.none { border-style: dashed; }
+@media (prefers-color-scheme: dark) {
+  .store-wholefoods { --store: #3ccf9b; }
+  .store-cam { --store: #b49bff; }
+  .store-target { --store: #ff6b6b; }
+  .store-costco { --store: #6fb3ff; }
+}
+
+.store-dot {
+  display: inline-block;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--store);
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+.store-head { display: flex; align-items: center; gap: 4px; }
+.store-option.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+.count.static { cursor: default; }
+
+.needs { list-style: none; margin: 4px 0 0; padding: 0 0 0 34px; flex-basis: 100%; }
+.needs li { padding: 6px 0; border-top: 1px dashed var(--line); font-size: 14px; gap: 8px; }
+.needs li:first-child { border-top: 0; }
+.small-box { width: 20px; height: 20px; font-size: 12px; border-radius: 6px; }

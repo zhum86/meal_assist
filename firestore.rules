@@ -7,10 +7,10 @@ service cloud.firestore {
     match /families/{code} {
       allow get: if request.auth != null;
     }
-    // dishes, slots and grocery records, only inside a family that exists.
+    // dishes, slots, grocery and settings records, only inside a family that exists.
     match /families/{code}/{collection}/{id} {
       allow read, write: if request.auth != null
-        && collection in ['dishes', 'slots', 'grocery']
+        && collection in ['dishes', 'slots', 'grocery', 'settings']
         && exists(/databases/$(database)/documents/families/$(code));
     }
   }

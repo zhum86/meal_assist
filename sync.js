@@ -5,7 +5,8 @@
 //   families/{code}                     {createdAt}
 //   families/{code}/dishes/{dishId}     {name, chef, photo, ingredients, updatedAt}
 //   families/{code}/slots/{date}_{meal} {date, meal, entries: [{dishId, dishName}]}
-//   families/{code}/grocery/{weekStart} {checked: {name: true}, extras: {id: {name, checked, at}}}
+//   families/{code}/grocery/{weekStart} {have: {needKey: true}, extras: {id: {name, checked, at}}}
+//   families/{code}/settings/stores     {items: {itemName: storeId}}
 // Firestore keeps an offline cache, so the app works without signal and catches up later.
 const Sync = (() => {
   const SDK = 'https://www.gstatic.com/firebasejs/12.19.0/';
@@ -103,6 +104,7 @@ const Sync = (() => {
     state.dishes = [];
     state.schedules = {};
     state.grocery = {};
+    state.itemStores = {};
     listen('dishes', docs => {
       state.dishes = docs.map(d => {
         const x = d.data();
@@ -122,12 +124,15 @@ const Sync = (() => {
       for (const d of docs) {
         const x = d.data();
         state.grocery[d.id] = {
-          checked: x.checked || {},
+          have: x.have || {},
           extras: Object.entries(x.extras || {})
             .map(([id, e]) => ({ id, name: e.name, checked: !!e.checked, at: e.at || 0 }))
             .sort((a, b) => a.at - b.at),
         };
       }
+    });
+    listen('settings', docs => {
+      state.itemStores = { ...docs.find(d => d.id === 'stores')?.data().items };
     });
   }
 
@@ -148,7 +153,7 @@ const Sync = (() => {
     await connect();
     const code = newCode();
     await fb.setDoc(familyDoc(code), { createdAt: Date.now() });
-    const local = { dishes: state.dishes, schedules: state.schedules, grocery: state.grocery };
+    const local = { dishes: state.dishes, schedules: state.schedules, grocery: state.grocery, itemStores: state.itemStores };
     self.code = code;
     try { await uploadAll(local); } catch (err) { self.code = null; throw err; }
     localStorage.setItem(CODE_KEY, code);
@@ -203,7 +208,8 @@ const Sync = (() => {
     return ops;
   }
 
-  async function uploadAll({ dishes, schedules, grocery }) {
+  async function uploadAll({ dishes, schedules, grocery, itemStores }) {
+    await fb.setDoc(storesRef(), { items: { ...itemStores } });
     await commitInChunks(dishes.map(d => b => b.set(fb.doc(col('dishes'), d.id), dishData(d))), 20);
     await commitInChunks(slotOps(schedules), 400);
     await commitInChunks(Object.entries(grocery).map(([ws, g]) => b => b.set(fb.doc(col('grocery'), ws), groceryData(g))), 400);
@@ -212,12 +218,13 @@ const Sync = (() => {
   function groceryData(g) {
     const extras = {};
     for (const e of g.extras) extras[e.id] = { name: e.name, checked: !!e.checked, at: e.at || Date.now() };
-    return { checked: { ...g.checked }, extras };
+    return { have: { ...g.have }, extras };
   }
 
   const fail = err => setStatus('error', err.code || err.message);
   const run = promise => promise.catch(fail);
   const groceryRef = ws => fb.doc(col('grocery'), ws);
+  const storesRef = () => fb.doc(col('settings'), 'stores');
 
   self.saveDish = d => run(fb.setDoc(fb.doc(col('dishes'), d.id), dishData(d)));
   self.deleteDish = id => run(fb.deleteDoc(fb.doc(col('dishes'), id)));
@@ -236,8 +243,16 @@ const Sync = (() => {
   ], 20));
 
   // Grocery edits touch single fields, so two people shopping at once don't overwrite each other.
-  self.setChecked = (ws, name, on) =>
-    run(fb.setDoc(groceryRef(ws), { checked: { [name]: on ? true : fb.deleteField() } }, { merge: true }));
+  self.setHave = (ws, keys) => {
+    const have = getGrocery(ws).have;
+    const fields = {};
+    for (const k of keys) fields[k] = have[k] ? true : fb.deleteField();
+    return run(fb.setDoc(groceryRef(ws), { have: fields }, { merge: true }));
+  };
+  self.saveItemStore = name => {
+    const id = state.itemStores[name];
+    return run(fb.setDoc(storesRef(), { items: { [name]: id || fb.deleteField() } }, { merge: true }));
+  };
   self.saveExtra = (ws, e) =>
     run(fb.setDoc(groceryRef(ws), { extras: { [e.id]: { name: e.name, checked: !!e.checked, at: e.at } } }, { merge: true }));
   self.removeExtra = (ws, id) =>

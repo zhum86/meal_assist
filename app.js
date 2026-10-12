@@ -4,6 +4,12 @@ const APP_ID = 'family-meals';
 const FILE_VERSION = 1;
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 const MEALS = ['breakfast', 'lunch', 'dinner'];
+const STORES = [
+  { id: 'wholefoods', name: 'Whole Foods' },
+  { id: 'cam', name: 'CAM' },
+  { id: 'target', name: 'Target' },
+  { id: 'costco', name: 'Costco' },
+];
 
 const state = {
   lang: 'zh',
@@ -12,12 +18,14 @@ const state = {
   menuView: 'week', // 'week' | 'day'
   day: ymd(new Date()), // date shown in the day view; always inside weekStart's week
   editing: false,
+  groceryView: 'plan', // 'plan' | 'shop'
   dishSearch: '',
   expanded: new Set(), // grocery items showing their dish breakdown
   // persisted
   dishes: [],    // [{id, name, chef, photo, ingredients: [string], updatedAt}]
   schedules: {}, // {weekStart: {mon: {breakfast: [{dishId, dishName}], lunch: [], dinner: []}, ...}}
-  grocery: {},   // {weekStart: {checked: {ingredient: true}, extras: [{id, name, checked}]}}
+  grocery: {},   // {weekStart: {have: {needKey: true}, extras: [{id, name, checked, at}]}}
+  itemStores: {}, // {itemName: storeId} preferred store per grocery item
 };
 
 // ---------- helpers ----------
@@ -96,8 +104,9 @@ function getWeek(ws, create) {
 }
 
 function getGrocery(ws) {
-  if (!state.grocery[ws]) state.grocery[ws] = { checked: {}, extras: [] };
-  return state.grocery[ws];
+  const g = state.grocery[ws] || (state.grocery[ws] = { have: {}, extras: [] });
+  if (!g.have) { g.have = {}; delete g.checked; } // lists saved before per-meal ticks
+  return g;
 }
 
 function weekEntries(week) {
@@ -143,7 +152,8 @@ const Save = {
   },
   slot(ws, day, meal) { Sync.active ? Sync.saveSlot(ws, day, meal) : persist('schedules'); },
   week(ws) { Sync.active ? Sync.saveWeek(ws) : persist('schedules'); },
-  checked(ws, name) { Sync.active ? Sync.setChecked(ws, name, !!getGrocery(ws).checked[name]) : persist('grocery'); },
+  have(ws, keys) { Sync.active ? Sync.setHave(ws, keys) : persist('grocery'); },
+  itemStore(name) { Sync.active ? Sync.saveItemStore(name) : persist('itemStores'); },
   extra(ws, ex) { Sync.active ? Sync.saveExtra(ws, ex) : persist('grocery'); },
   removeExtra(ws, id) { Sync.active ? Sync.removeExtra(ws, id) : persist('grocery'); },
   grocery(ws) { Sync.active ? Sync.saveGrocery(ws) : persist('grocery'); },
@@ -306,20 +316,70 @@ function setWeek(ws) {
   state.expanded.clear();
 }
 
+// Each ingredient lists the meals that need it; a meal's need is ticked off
+// (already have it / bought) by its own key, so leftovers can cover some meals.
+function needKey(date, meal, dishId, ingredient) {
+  return `${date}|${meal}|${dishId}|${ingredient}`;
+}
+
 function computeGrocery(ws) {
+  const g = getGrocery(ws);
   const items = new Map();
   const missing = [];
-  for (const { entry } of weekEntries(getWeek(ws, false))) {
+  for (const { day, meal, entry } of weekEntries(getWeek(ws, false))) {
     const dish = findDish(entry);
     if (!dish) { missing.push(entry.dishName); continue; }
+    const date = addDays(ws, DAYS.indexOf(day));
     for (const ing of new Set(dish.ingredients.map(s => s.trim()).filter(Boolean))) {
-      if (!items.has(ing)) items.set(ing, { name: ing, count: 0, dishes: new Map() });
-      const it = items.get(ing);
-      it.count++;
-      it.dishes.set(dish.name, (it.dishes.get(dish.name) || 0) + 1);
+      if (!items.has(ing)) items.set(ing, { name: ing, needs: [] });
+      const key = needKey(date, meal, dish.id, ing);
+      items.get(ing).needs.push({ key, day, meal, dish: dish.name, done: !!g.have[key] });
     }
   }
+  for (const it of items.values()) {
+    it.count = it.needs.length;
+    it.left = it.needs.filter(n => !n.done).length;
+  }
   return { items: [...items.values()], missing: [...new Set(missing)] };
+}
+
+function storeTag(name) {
+  const store = STORES.find(s => s.id === state.itemStores[name]);
+  return `<button class="store-tag ${store ? `store-${store.id}` : 'none'}" data-action="pick-store" data-name="${esc(name)}">${store ? esc(store.name) : t('storeTag')}</button>`;
+}
+
+function countLabel(it) {
+  const label = it.left === 1 ? t('neededBy1') : t('neededBy', { n: it.left });
+  return it.left && it.left < it.count ? `${label} · ${t('haveCount', { n: it.count - it.left })}` : label;
+}
+
+function ingredientRow(it, withBreakdown) {
+  const done = it.left === 0;
+  const open = withBreakdown && state.expanded.has(it.name);
+  let html = `<li class="${done ? 'checked' : ''}" data-action="check-ing" data-name="${esc(it.name)}">
+    <span class="box">${done ? '✓' : ''}</span>
+    <span class="item-name">${esc(it.name)}</span>
+    ${storeTag(it.name)}
+    ${withBreakdown
+      ? `<button class="count" data-action="expand-ing" data-name="${esc(it.name)}">${done ? (it.count === 1 ? t('neededBy1') : t('neededBy', { n: it.count })) : countLabel(it)} ${open ? '▴' : '▾'}</button>`
+      : (done ? '' : `<span class="count static">${countLabel(it)}</span>`)}`;
+  if (open) {
+    html += `<ul class="needs">${it.needs.map(n => `
+      <li class="${n.done ? 'checked' : ''}" data-action="check-need" data-key="${esc(n.key)}">
+        <span class="box small-box">${n.done ? '✓' : ''}</span>
+        <span class="item-name">${t('days')[DAYS.indexOf(n.day)]} ${t(n.meal)} · ${esc(n.dish)}</span>
+      </li>`).join('')}</ul>`;
+  }
+  return html + `</li>`;
+}
+
+function extraRow(ex, removable) {
+  return `<li class="${ex.checked ? 'checked' : ''}" data-action="check-extra" data-id="${esc(ex.id)}">
+    <span class="box">${ex.checked ? '✓' : ''}</span>
+    <span class="item-name">${esc(ex.name)}</span>
+    ${storeTag(ex.name)}
+    ${removable ? `<button class="x" data-action="remove-extra" data-id="${esc(ex.id)}" aria-label="${t('delete')}">×</button>` : ''}
+  </li>`;
 }
 
 function renderGrocery() {
@@ -327,47 +387,87 @@ function renderGrocery() {
   const g = getGrocery(ws);
   const { items, missing } = computeGrocery(ws);
   const collator = new Intl.Collator(state.lang === 'zh' ? 'zh-CN' : 'en');
-  items.sort((a, b) => (!!g.checked[a.name] - !!g.checked[b.name])
-    || (b.count - a.count) || collator.compare(a.name, b.name));
+  items.sort((a, b) => (!a.left - !b.left) || (b.left - a.left) || collator.compare(a.name, b.name));
+  const extras = [...g.extras].sort((a, b) => a.checked - b.checked);
 
-  let html = weekNav();
+  let html = weekNav() + `
+    <div class="segmented">
+      ${['plan', 'shop'].map(v => `<button class="${state.groceryView === v ? 'active' : ''}" data-action="grocery-view" data-view="${v}">${t(v === 'plan' ? 'groceryPlan' : 'groceryShop')}</button>`).join('')}
+    </div>`;
   if (missing.length)
     html += `<div class="warning">⚠️ ${esc(t('missingWarning', { n: missing.length, names: missing.join('、') }))}</div>`;
 
-  html += `<section class="card"><h3>${t('fromSchedule')}</h3>`;
+  html += state.groceryView === 'shop' ? renderShopList(items, extras) : renderPlanList(items, extras);
+
+  if (Object.keys(g.have).length || g.extras.some(e => e.checked))
+    html += `<div class="center"><button class="link" data-action="reset-checks">${t('resetChecks')}</button></div>`;
+  return html;
+}
+
+function renderPlanList(items, extras) {
+  let html = `<section class="card"><h3>${t('fromSchedule')}</h3>`;
   if (!items.length) html += `<p class="muted">${t('emptyGrocery')}</p>`;
-  html += `<ul class="checklist">`;
-  for (const it of items) {
-    const checked = !!g.checked[it.name];
-    const open = state.expanded.has(it.name);
-    html += `<li class="${checked ? 'checked' : ''}" data-action="check-ing" data-name="${esc(it.name)}">
-      <span class="box">${checked ? '✓' : ''}</span>
-      <span class="item-name">${esc(it.name)}</span>
-      <button class="count" data-action="expand-ing" data-name="${esc(it.name)}">${it.count === 1 ? t('neededBy1') : t('neededBy', { n: it.count })} ${open ? '▴' : '▾'}</button>
-      ${open ? `<div class="breakdown">${[...it.dishes].map(([n, c]) => esc(c > 1 ? `${n} ×${c}` : n)).join('、')}</div>` : ''}
-    </li>`;
-  }
-  html += `</ul></section>`;
+  html += `<ul class="checklist">${items.map(it => ingredientRow(it, true)).join('')}</ul></section>`;
 
   html += `<section class="card"><h3>${t('otherItems')}</h3>
     <form class="row" data-form="add-extra">
       <input name="item" placeholder="${t('addItemPh')}" autocomplete="off">
       <button class="btn primary" type="submit">${t('add')}</button>
     </form>
-    <ul class="checklist">`;
-  const extras = [...g.extras].sort((a, b) => a.checked - b.checked);
-  for (const ex of extras) {
-    html += `<li class="${ex.checked ? 'checked' : ''}" data-action="check-extra" data-id="${esc(ex.id)}">
-      <span class="box">${ex.checked ? '✓' : ''}</span>
-      <span class="item-name">${esc(ex.name)}</span>
-      <button class="x" data-action="remove-extra" data-id="${esc(ex.id)}" aria-label="${t('delete')}">×</button>
-    </li>`;
-  }
-  html += `</ul></section>`;
-
-  if (Object.values(g.checked).some(Boolean) || g.extras.some(e => e.checked))
-    html += `<div class="center"><button class="link" data-action="reset-checks">${t('resetChecks')}</button></div>`;
+    <ul class="checklist">${extras.map(ex => extraRow(ex, true)).join('')}</ul></section>`;
   return html;
+}
+
+// Everything on the list grouped by preferred store; ticked items sink to the bottom of their group.
+function renderShopList(items, extras) {
+  const groups = [...STORES, { id: '', name: t('noStore') }].map(s => ({ ...s, rows: [], left: 0 }));
+  const groupOf = name => groups.find(gr => gr.id === (state.itemStores[name] || '')) || groups[groups.length - 1];
+  for (const it of items) {
+    const gr = groupOf(it.name);
+    gr.rows.push({ done: !it.left, html: ingredientRow(it, false) });
+    if (it.left) gr.left++;
+  }
+  for (const ex of extras) {
+    const gr = groupOf(ex.name);
+    gr.rows.push({ done: ex.checked, html: extraRow(ex, false) });
+    if (!ex.checked) gr.left++;
+  }
+  const used = groups.filter(gr => gr.rows.length);
+  if (!used.length) return `<p class="hint">${t('emptyGrocery')}</p>`;
+  if (!used.some(gr => gr.left)) return `<p class="hint">${t('allBought')}</p>` + shopGroups(used);
+  return shopGroups(used);
+}
+
+function shopGroups(groups) {
+  return groups.map(gr => `
+    <section class="card">
+      <h3 class="store-head">${gr.id ? `<span class="store-dot store-${gr.id}"></span>` : ''}${esc(gr.name)} <span class="muted">${gr.left}</span></h3>
+      <ul class="checklist">${gr.rows.sort((a, b) => a.done - b.done).map(r => r.html).join('')}</ul>
+    </section>`).join('');
+}
+
+function openStorePicker(name) {
+  const current = state.itemStores[name] || '';
+  const sheet = openModal(`
+    <h2>${t('storeFor', { name: esc(name) })}</h2>
+    <div class="store-options">
+      ${[...STORES, { id: '', name: t('noStore') }].map(s => `
+        <button class="option store-option ${s.id === current ? 'selected' : ''}" data-store="${s.id}">
+          <strong>${s.id ? `<span class="store-dot store-${s.id}"></span>` : ''}${esc(s.name)}</strong>
+        </button>`).join('')}
+    </div>
+    <p class="muted small">${t('storeRemember')}</p>
+    <div class="actions"><span class="spacer"></span><button class="btn" id="st-close">${t('close')}</button></div>`);
+  sheet.querySelector('#st-close').onclick = closeModal;
+  sheet.querySelector('.store-options').onclick = e => {
+    const b = e.target.closest('[data-store]');
+    if (!b) return;
+    if (b.dataset.store) state.itemStores[name] = b.dataset.store;
+    else delete state.itemStores[name];
+    Save.itemStore(name);
+    closeModal();
+    render();
+  };
 }
 
 function renderDishes() {
@@ -786,11 +886,30 @@ const actions = {
   'import-dishes'() { startImport('dishes'); },
   'export-schedule': exportSchedule,
   'import-schedule'() { startImport('schedule'); },
+  // Ticking an ingredient covers all meals still needing it; unticking a fully ticked one clears them.
   'check-ing'(el) {
-    const g = getGrocery(state.weekStart);
-    const name = el.dataset.name;
-    if (g.checked[name]) delete g.checked[name]; else g.checked[name] = true;
-    Save.checked(state.weekStart, name);
+    const ws = state.weekStart;
+    const g = getGrocery(ws);
+    const it = computeGrocery(ws).items.find(i => i.name === el.dataset.name);
+    if (!it) return;
+    const on = it.left > 0;
+    const keys = it.needs.filter(n => n.done !== on).map(n => n.key);
+    keys.forEach(k => { if (on) g.have[k] = true; else delete g.have[k]; });
+    Save.have(ws, keys);
+    render();
+  },
+  'check-need'(el) {
+    const ws = state.weekStart;
+    const g = getGrocery(ws);
+    const key = el.dataset.key;
+    if (g.have[key]) delete g.have[key]; else g.have[key] = true;
+    Save.have(ws, [key]);
+    render();
+  },
+  'pick-store'(el) { openStorePicker(el.dataset.name); },
+  'grocery-view'(el) {
+    state.groceryView = el.dataset.view;
+    try { localStorage.setItem('fm-grocery-view', state.groceryView); } catch {}
     render();
   },
   'expand-ing'(el) {
@@ -810,7 +929,7 @@ const actions = {
   },
   'reset-checks'() {
     const g = getGrocery(state.weekStart);
-    g.checked = {};
+    g.have = {};
     g.extras.forEach(x => { x.checked = false; });
     Save.grocery(state.weekStart);
     render();
@@ -882,6 +1001,7 @@ async function loadLocal() {
     state.dishes = await Store.get('dishes', []);
     state.schedules = await Store.get('schedules', {});
     state.grocery = await Store.get('grocery', {});
+    state.itemStores = await Store.get('itemStores', {});
   } catch (err) {
     toast(t('saveFailed', { err: err?.message || err }));
   }
@@ -1006,7 +1126,10 @@ function checkInviteLink() {
   let lang = null;
   try { lang = localStorage.getItem('fm-lang'); } catch {}
   state.lang = lang === 'en' ? 'en' : 'zh';
-  try { state.menuView = localStorage.getItem('fm-menu-view') === 'day' ? 'day' : 'week'; } catch {}
+  try {
+    state.menuView = localStorage.getItem('fm-menu-view') === 'day' ? 'day' : 'week';
+    state.groceryView = localStorage.getItem('fm-grocery-view') === 'shop' ? 'shop' : 'plan';
+  } catch {}
 
   if (Sync.savedCode() && Sync.available) Sync.resume();
   else await loadLocal();

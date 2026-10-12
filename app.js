@@ -386,8 +386,9 @@ function renderGrocery() {
   const ws = state.weekStart;
   const g = getGrocery(ws);
   const { items, missing } = computeGrocery(ws);
-  const collator = new Intl.Collator(state.lang === 'zh' ? 'zh-CN' : 'en');
-  items.sort((a, b) => (!a.left - !b.left) || (b.left - a.left) || collator.compare(a.name, b.name));
+  // Pinyin order (zh-CN collation), with fully ticked items moved to the bottom.
+  const pinyin = new Intl.Collator('zh-CN');
+  items.sort((a, b) => (!a.left - !b.left) || pinyin.compare(a.name, b.name));
   const extras = [...g.extras].sort((a, b) => a.checked - b.checked);
 
   let html = weekNav() + `

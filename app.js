@@ -6,6 +6,7 @@ const FILE_VERSION = 1;
 const WEEK_START_DAY = 3; // Date.getDay() of the first day of a week
 const WEEKDAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']; // Date.getDay() order
 const DAYS = [...WEEKDAY_KEYS.slice(WEEK_START_DAY), ...WEEKDAY_KEYS.slice(0, WEEK_START_DAY)]; // order within a week
+const SHOPPING_DAYS = ['mon', 'tue']; // on these days the grocery tab opens on the upcoming week
 const MEALS = ['breakfast', 'lunch', 'dinner'];
 const STORES = [
   { id: 'wholefoods', name: 'Whole Foods' },
@@ -877,7 +878,17 @@ const actions = {
     try { localStorage.setItem('fm-lang', state.lang); } catch {}
     render();
   },
-  tab(el) { state.tab = el.dataset.tab; render(); window.scrollTo(0, 0); },
+  tab(el) {
+    state.tab = el.dataset.tab;
+    // Shopping days buy for the week starting Wednesday, so the first grocery visit shows that week.
+    if (state.tab === 'grocery' && !state.groceryJumped) {
+      state.groceryJumped = true;
+      if (SHOPPING_DAYS.includes(dayKeyOf(ymd(new Date()))) && state.weekStart === weekStartOf(new Date()))
+        setWeek(addDays(state.weekStart, 7));
+    }
+    render();
+    window.scrollTo(0, 0);
+  },
   'prev-week'() { setWeek(addDays(state.weekStart, -7)); render(); },
   'next-week'() { setWeek(addDays(state.weekStart, 7)); render(); },
   'this-week'() { setWeek(weekStartOf(new Date())); render(); },
@@ -1172,6 +1183,22 @@ function checkInviteLink() {
 // ---------- start ----------
 
 (async function init() {
+  // Listen before anything async: the browser checks for a new version as soon as the page opens.
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+    // A new version takes over in the background; reload once so it shows right away.
+    // (No reload on the very first visit, when there was no previous version.)
+    if (navigator.serviceWorker.controller) {
+      let reloaded = false;
+      const reloadWhenIdle = () => {
+        if (!$('#modal').hidden || document.querySelector('.cropper')) return setTimeout(reloadWhenIdle, 1000);
+        location.reload();
+      };
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (!reloaded) { reloaded = true; reloadWhenIdle(); }
+      });
+    }
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
   let lang = null;
   try { lang = localStorage.getItem('fm-lang'); } catch {}
   state.lang = lang === 'en' ? 'en' : 'zh';
@@ -1186,6 +1213,4 @@ function checkInviteLink() {
   checkInviteLink();
 
   navigator.storage?.persist?.().catch(() => {});
-  if ('serviceWorker' in navigator && location.protocol.startsWith('http'))
-    navigator.serviceWorker.register('sw.js').catch(() => {});
 })();

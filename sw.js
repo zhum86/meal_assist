@@ -1,6 +1,6 @@
 // Offline support: serve the app shell from cache, refresh it in the background.
 // Bump CACHE when shipping changes so old files are dropped.
-const CACHE = 'family-meals-v10';
+const CACHE = 'family-meals-v12';
 const ASSETS = [
   './', './index.html', './styles.css', './i18n.js', './store.js', './cropper.js', './firebase-config.js', './sync.js', './app.js', './data/default-dishes.js',
   './manifest.webmanifest', './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png',

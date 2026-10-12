@@ -115,14 +115,14 @@ const Sync = (() => {
       state.schedules = {};
       for (const d of docs) {
         const { date, meal, entries } = d.data();
-        const day = DAYS[(parseYmd(date).getDay() + 6) % 7];
-        getWeek(mondayOf(parseYmd(date)), true)[day][meal] = entries || [];
+        getWeek(weekStartOf(parseYmd(date)), true)[dayKeyOf(date)][meal] = entries || [];
       }
     });
     listen('grocery', docs => {
       state.grocery = {};
       for (const d of docs) {
         const x = d.data();
+        if (d.id !== weekStartOf(parseYmd(d.id))) { moveGroceryDoc(d.id, x); continue; }
         state.grocery[d.id] = {
           have: x.have || {},
           extras: Object.entries(x.extras || {})
@@ -134,6 +134,18 @@ const Sync = (() => {
     listen('settings', docs => {
       state.itemStores = { ...docs.find(d => d.id === 'stores')?.data().items };
     });
+  }
+
+  // Grocery lists saved when weeks started on Monday move to the Wednesday of their week.
+  const moving = new Set();
+  async function moveGroceryDoc(id, data) {
+    if (moving.has(id)) return;
+    moving.add(id);
+    try {
+      const target = fb.doc(col('grocery'), dateFrom(id, DAYS[0]));
+      await fb.setDoc(target, { have: data.have || {}, extras: data.extras || {} }, { merge: true });
+      await fb.deleteDoc(fb.doc(col('grocery'), id));
+    } catch (err) { fail(err); }
   }
 
   function stopListening() {

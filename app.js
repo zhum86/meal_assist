@@ -2,7 +2,10 @@
 
 const APP_ID = 'family-meals';
 const FILE_VERSION = 1;
-const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+// Weeks start on Wednesday (the family shops Monday/Tuesday for the week ahead).
+const WEEK_START_DAY = 3; // Date.getDay() of the first day of a week
+const WEEKDAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']; // Date.getDay() order
+const DAYS = [...WEEKDAY_KEYS.slice(WEEK_START_DAY), ...WEEKDAY_KEYS.slice(0, WEEK_START_DAY)]; // order within a week
 const MEALS = ['breakfast', 'lunch', 'dinner'];
 const STORES = [
   { id: 'wholefoods', name: 'Whole Foods' },
@@ -14,7 +17,7 @@ const STORES = [
 const state = {
   lang: 'zh',
   tab: 'week',
-  weekStart: mondayOf(new Date()),
+  weekStart: weekStartOf(new Date()),
   menuView: 'week', // 'week' | 'day'
   day: ymd(new Date()), // date shown in the day view; always inside weekStart's week
   editing: false,
@@ -56,11 +59,21 @@ function parseYmd(s) {
   return new Date(y, m - 1, d);
 }
 
-function mondayOf(date) {
+function weekStartOf(date) {
   const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-  d.setDate(d.getDate() - (d.getDay() + 6) % 7);
+  d.setDate(d.getDate() - (d.getDay() - WEEK_START_DAY + 7) % 7);
   return ymd(d);
 }
+
+const dayKeyOf = date => WEEKDAY_KEYS[parseYmd(date).getDay()];
+
+// The date of weekday `day` in the 7 days starting at `start` (any weekday).
+function dateFrom(start, day) {
+  return addDays(start, (WEEKDAY_KEYS.indexOf(day) - parseYmd(start).getDay() + 7) % 7);
+}
+
+// I18N day names are listed Monday first.
+const dayLabel = day => t('days')[(WEEKDAY_KEYS.indexOf(day) + 6) % 7];
 
 function addDays(s, n) {
   const d = parseYmd(s);
@@ -185,7 +198,7 @@ function thumb(dish, cls = 'thumb') {
 
 function weekNav() {
   const ws = state.weekStart;
-  const isThis = ws === mondayOf(new Date());
+  const isThis = ws === weekStartOf(new Date());
   return `
     <div class="week-nav">
       <button class="icon-btn" data-action="prev-week" aria-label="${t('prevWeek')}">‹</button>
@@ -230,7 +243,7 @@ function renderWeek() {
     const date = addDays(ws, i);
     const isToday = date === today;
     html += `<section class="day card ${isToday ? 'today' : ''}">
-      <h3 class="day-link" data-action="open-day" data-date="${date}">${t('days')[i]} <span class="muted">${fmtDate(date)}</span>${isToday ? ` <span class="badge">${t('today')}</span>` : ''}<span class="go">›</span></h3>`;
+      <h3 class="day-link" data-action="open-day" data-date="${date}">${dayLabel(day)} <span class="muted">${fmtDate(date)}</span>${isToday ? ` <span class="badge">${t('today')}</span>` : ''}<span class="go">›</span></h3>`;
     for (const meal of MEALS) {
       const entries = week?.[day]?.[meal] || [];
       html += `<div class="meal"><div class="meal-label">${t(meal)}</div><div class="meal-dishes">`;
@@ -260,8 +273,7 @@ function removeButton(day, meal, idx) {
 function renderDay() {
   const date = state.day;
   const today = ymd(new Date());
-  const i = (parseYmd(date).getDay() + 6) % 7;
-  const day = DAYS[i];
+  const day = dayKeyOf(date);
   const meals = getWeek(state.weekStart, false)?.[day];
   const editing = state.editing;
 
@@ -269,7 +281,7 @@ function renderDay() {
     <div class="week-nav">
       <button class="icon-btn" data-action="prev-day" aria-label="${t('prevDay')}">‹</button>
       <div class="week-title">
-        <strong>${t('days')[i]}${date === today ? ` <span class="badge">${t('today')}</span>` : ''}</strong>
+        <strong>${dayLabel(day)}${date === today ? ` <span class="badge">${t('today')}</span>` : ''}</strong>
         <span>${fmtDate(date)}</span>
       </div>
       <button class="icon-btn" data-action="next-day" aria-label="${t('nextDay')}">›</button>
@@ -305,14 +317,14 @@ function renderDay() {
 // Day view and week navigation share one position: keep state.day inside state.weekStart's week.
 function setDay(date) {
   state.day = date;
-  state.weekStart = mondayOf(parseYmd(date));
+  state.weekStart = weekStartOf(parseYmd(date));
   state.expanded.clear();
 }
 
 function setWeek(ws) {
   state.weekStart = ws;
   const today = ymd(new Date());
-  state.day = mondayOf(new Date()) === ws ? today : ws;
+  state.day = weekStartOf(new Date()) === ws ? today : ws;
   state.expanded.clear();
 }
 
@@ -367,7 +379,7 @@ function ingredientRow(it, withBreakdown) {
     html += `<ul class="needs">${it.needs.map(n => `
       <li class="${n.done ? 'checked' : ''}" data-action="check-need" data-key="${esc(n.key)}">
         <span class="box small-box">${n.done ? '✓' : ''}</span>
-        <span class="item-name">${t('days')[DAYS.indexOf(n.day)]} ${t(n.meal)} · ${esc(n.dish)}</span>
+        <span class="item-name">${dayLabel(n.day)} ${t(n.meal)} · ${esc(n.dish)}</span>
       </li>`).join('')}</ul>`;
   }
   return html + `</li>`;
@@ -386,10 +398,10 @@ function renderGrocery() {
   const ws = state.weekStart;
   const g = getGrocery(ws);
   const { items, missing } = computeGrocery(ws);
-  // Pinyin order (zh-CN collation), with fully ticked items moved to the bottom.
+  // Pinyin order (zh-CN collation); ticked items stay in place. Other items keep the order added.
   const pinyin = new Intl.Collator('zh-CN');
-  items.sort((a, b) => (!a.left - !b.left) || pinyin.compare(a.name, b.name));
-  const extras = [...g.extras].sort((a, b) => a.checked - b.checked);
+  items.sort((a, b) => pinyin.compare(a.name, b.name));
+  const extras = g.extras;
 
   let html = weekNav() + `
     <div class="segmented">
@@ -419,7 +431,7 @@ function renderPlanList(items, extras) {
   return html;
 }
 
-// Everything on the list grouped by preferred store; ticked items sink to the bottom of their group.
+// Everything on the list grouped by preferred store.
 function renderShopList(items, extras) {
   const groups = [...STORES, { id: '', name: t('noStore') }].map(s => ({ ...s, rows: [], left: 0 }));
   const groupOf = name => groups.find(gr => gr.id === (state.itemStores[name] || '')) || groups[groups.length - 1];
@@ -443,7 +455,7 @@ function shopGroups(groups) {
   return groups.map(gr => `
     <section class="card">
       <h3 class="store-head">${gr.id ? `<span class="store-dot store-${gr.id}"></span>` : ''}${esc(gr.name)} <span class="muted">${gr.left}</span></h3>
-      <ul class="checklist">${gr.rows.sort((a, b) => a.done - b.done).map(r => r.html).join('')}</ul>
+      <ul class="checklist">${gr.rows.map(r => r.html).join('')}</ul>
     </section>`).join('');
 }
 
@@ -654,9 +666,8 @@ function openDishForm(existing) {
 }
 
 function openPicker(day, meal) {
-  const dayLabel = t('days')[DAYS.indexOf(day)];
   const sheet = openModal(`
-    <h2>${t('pickDish')} · ${dayLabel} ${t(meal)}</h2>
+    <h2>${t('pickDish')} · ${dayLabel(day)} ${t(meal)}</h2>
     <input id="p-search" class="search" type="search" placeholder="${t('searchDishes')}">
     <div id="p-list" class="pick-list"></div>
     <div class="actions"><span class="spacer"></span>
@@ -829,19 +840,28 @@ function importSchedule(data) {
   const kind = t('kindSchedule');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(data.weekStart) || !Array.isArray(data.meals))
     return toast(t('invalidFile', { kind }));
-  const ws = mondayOf(parseYmd(data.weekStart));
-  const week = emptyWeek();
+  // Meals are placed by date, so files whose week starts on another weekday still fit.
+  const start = data.weekStart;
+  const dates = DAYS.map((_, i) => addDays(start, i));
+  const incoming = {};
   for (const m of data.meals) {
     if (!DAYS.includes(m?.day) || !MEALS.includes(m?.meal) || typeof m.dishName !== 'string' || !m.dishName.trim()) continue;
-    week[m.day][m.meal].push({ dishId: typeof m.dishId === 'string' ? m.dishId : '', dishName: m.dishName.trim() });
+    const k = `${dateFrom(start, m.day)}|${m.meal}`;
+    (incoming[k] ||= []).push({ dishId: typeof m.dishId === 'string' ? m.dishId : '', dishName: m.dishName.trim() });
   }
-  if (weekEntries(getWeek(ws, false)).length && !confirm(t('confirmReplaceWeek', { date: fmtDate(ws) }))) return;
-  state.schedules[ws] = week;
-  setWeek(ws);
+  const slotOf = (date, meal) => getWeek(weekStartOf(parseYmd(date)), true)[dayKeyOf(date)][meal];
+  const hasMeals = dates.some(date => MEALS.some(meal => getWeek(weekStartOf(parseYmd(date)), false)?.[dayKeyOf(date)][meal].length));
+  if (hasMeals && !confirm(t('confirmReplaceWeek', { date: fmtDate(start) }))) return;
+  for (const date of dates) for (const meal of MEALS) {
+    const slot = slotOf(date, meal);
+    slot.splice(0, slot.length, ...(incoming[`${date}|${meal}`] || []));
+  }
+  const weeks = [...new Set(dates.map(d => weekStartOf(parseYmd(d))))];
+  weeks.forEach(ws => Save.week(ws));
+  setWeek(weekStartOf(parseYmd(start)));
   state.tab = 'week';
-  Save.week(ws);
   render();
-  toast(t('importedSchedule', { date: fmtDate(ws) }));
+  toast(t('importedSchedule', { date: fmtDate(start) }));
 }
 
 // ---------- actions ----------
@@ -860,7 +880,7 @@ const actions = {
   tab(el) { state.tab = el.dataset.tab; render(); window.scrollTo(0, 0); },
   'prev-week'() { setWeek(addDays(state.weekStart, -7)); render(); },
   'next-week'() { setWeek(addDays(state.weekStart, 7)); render(); },
-  'this-week'() { setWeek(mondayOf(new Date())); render(); },
+  'this-week'() { setWeek(weekStartOf(new Date())); render(); },
   'prev-day'() { setDay(addDays(state.day, -1)); render(); },
   'next-day'() { setDay(addDays(state.day, 1)); render(); },
   'go-today'() { setDay(ymd(new Date())); render(); },
@@ -1003,9 +1023,37 @@ async function loadLocal() {
     state.schedules = await Store.get('schedules', {});
     state.grocery = await Store.get('grocery', {});
     state.itemStores = await Store.get('itemStores', {});
+    if (regroupWeeks()) { persist('schedules'); persist('grocery'); }
   } catch (err) {
     toast(t('saveFailed', { err: err?.message || err }));
   }
+}
+
+// Data saved when weeks started on Monday is keyed by a Monday: move meals to the
+// weeks their dates now belong to, and each grocery list to the Wednesday of its week.
+function regroupWeeks() {
+  let changed = false;
+  for (const ws of Object.keys(state.schedules)) {
+    if (ws === weekStartOf(parseYmd(ws))) continue;
+    const old = state.schedules[ws];
+    delete state.schedules[ws];
+    for (const day of DAYS) for (const meal of MEALS) {
+      const entries = old[day]?.[meal] || [];
+      const date = dateFrom(ws, day);
+      if (entries.length) getWeek(weekStartOf(parseYmd(date)), true)[day][meal] = entries;
+    }
+    changed = true;
+  }
+  for (const ws of Object.keys(state.grocery)) {
+    if (ws === weekStartOf(parseYmd(ws))) continue;
+    const old = state.grocery[ws];
+    delete state.grocery[ws];
+    const g = getGrocery(dateFrom(ws, DAYS[0]));
+    Object.assign(g.have, old.have);
+    g.extras.push(...(old.extras || []));
+    changed = true;
+  }
+  return changed;
 }
 
 function inviteLink(code) {
